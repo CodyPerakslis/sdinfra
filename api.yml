@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  S3Bucket:
+    Type: String
+    Default: "initial-resources"
+  S3Key:
+    Type: String
+    Default: "mobile_api_0.zip"
+
+Resources:
+  MobileProxyLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 7
+
+  MobileProxyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /mobileapi/
+      Policies:
+        - PolicyName: MobileBackendPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt MobileProxyLogGroup.Arn
+
+  MobileProxyLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: !Ref S3Key
+      Description: Proxy for Mobile Api
+      Handler: mobile_proxy.lambda_handler
+      Role: !GetAtt MobileProxyRole.Arn
+      Runtime: python3.6
+      Timeout: "60"
+
+  MobileApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref MobileApi
+      StageName: v1
+      DeploymentId: !Ref MobileApiDeploy
+
+  MobileApiDeploy:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: MobileApi
+    Properties:
+      RestApiId: !Ref MobileApi
+
+  MobileApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /mobileapi/
+      RoleName: MobileApiRole
+      Policies:
+        - PolicyName: MobileApiAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt MobileProxyLambda.Arn
+
+  MobileApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: mobile-api
+      Description: First API for user connections to database
+      Body:
+        swagger: 2.0
+        info:
+          version: v1
+          title: Mobile API
+        basePath: /
+        schemes:
+          - https
+        paths:
+          /hello:
+            get:
+              responses:
+                '200':
+                  schema:
+                    type: string
+              produces:
+                - "application/json"
+              x-amazon-apigateway-integration:
+                credentials: !GetAtt MobileApiRole.Arn
+                contentHandling: CONVERT_TO_TEXT
+                responses:
+                  default:
+                    statusCode: "200"
+                uri: !Join ["", ["arn:aws:apigateway:",!Ref "AWS::Region", ":lambda:path/2015-03-31/functions/",!GetAtt MobileProxyLambda.Arn,"/invocations"]]
+                passthroughBehavior: when_no_templates
+                httpMethod: POST
+                type: aws_proxy
+
+Outputs:
+  MobileApiOutput:
+    Value: !Ref MobileApi
+    Export:
+      Name: !Join [":", [!Ref "AWS::StackName", "MobileApi"]]
